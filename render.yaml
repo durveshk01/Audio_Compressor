@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: audiocompress
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: MAX_UPLOAD_FILES
+        value: 100
+      - key: MAX_FILE_MB
+        value: 600
+      - key: JOB_TTL_MINUTES
+        value: 60
+      - key: FFMPEG_PATH
+        value: ffmpeg
+      - key: FFPROBE_PATH
+        value: ffprobe
