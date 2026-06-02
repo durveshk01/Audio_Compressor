@@ -124,17 +124,19 @@ function buildArgs(inputPath: string, outputPath: string, format: AudioFormat, b
     "-c:a",
     audioCodec,
     "-b:a",
-    `${bitrateKbps}k`,
-    "-c:v",
-    "copy"
+    `${bitrateKbps}k`
   ];
 
   if (format === "mp3") {
-    args.push("-id3v2_version", "3", "-write_id3v1", "1");
+    // -compression_level 9 is slowest (best quality), 0 is fastest
+    // We use 2 for a good balance biased towards speed
+    args.push("-compression_level", "2", "-id3v2_version", "3", "-write_id3v1", "1");
   } else {
+    // aac doesn't have a simple speed preset like x264, but we ensure copy for video
     args.push("-movflags", "+faststart+use_metadata_tags");
   }
 
-  args.push(outputPath);
+  // Always copy video/album art to avoid re-encoding it
+  args.push("-c:v", "copy", outputPath);
   return args;
 }

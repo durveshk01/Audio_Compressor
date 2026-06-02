@@ -68,7 +68,8 @@ async function processJob(jobId: string) {
     await ensureDir(job.outputDir);
 
     const cpus = os.cpus().length;
-    const concurrency = Math.max(1, Math.min(cpus > 4 ? 4 : 2, job.files.length));
+    // Increased concurrency: allow more parallel jobs on high-core systems
+    const concurrency = Math.max(1, Math.min(cpus > 8 ? 8 : 4, job.files.length));
     const threadsPerFfmpeg = Math.max(1, Math.floor(cpus / concurrency));
     const queue = [...job.files];
     
