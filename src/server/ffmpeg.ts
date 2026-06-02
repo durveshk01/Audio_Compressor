@@ -68,16 +68,18 @@ export async function compressAudio(options: {
   outputPath: string;
   format: AudioFormat;
   targetMb: number;
+  probe?: ProbeResult;
+  threads?: number;
   onProgress: (progress: number, bitrateKbps: number) => void;
 }) {
-  const probe = await probeAudio(options.inputPath);
+  const probe = options.probe || await probeAudio(options.inputPath);
   const targetBytes = options.targetMb * MB;
   let bitrateKbps = calculateBitrateKbps(probe.duration, options.targetMb, probe.bitrate);
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt < 7; attempt += 1) {
     await fs.rm(options.outputPath, { force: true });
-    const args = buildArgs(options.inputPath, options.outputPath, options.format, bitrateKbps);
+    const args = buildArgs(options.inputPath, options.outputPath, options.format, bitrateKbps, options.threads);
 
     try {
       await run(config.ffmpegPath, args, (text) => {
@@ -105,10 +107,12 @@ export async function compressAudio(options: {
   throw lastError ?? new Error("Unable to compress within the selected target size.");
 }
 
-function buildArgs(inputPath: string, outputPath: string, format: AudioFormat, bitrateKbps: number) {
+function buildArgs(inputPath: string, outputPath: string, format: AudioFormat, bitrateKbps: number, threads?: number) {
   const audioCodec = format === "mp3" ? "libmp3lame" : "aac";
   const args = [
     "-y",
+    "-threads",
+    (threads ?? 0).toString(),
     "-i",
     inputPath,
     "-map",

@@ -139,6 +139,7 @@ function App() {
     };
     events.onerror = () => {
       events.close();
+      toast.error("Lost connection to progress updates.");
     };
   };
 

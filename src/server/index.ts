@@ -15,12 +15,14 @@ await ensureDir(config.tempRoot);
 type UploadRequest = express.Request & { audioCompressUploadDir?: string };
 
 const storage = multer.diskStorage({
-  destination: async (req: UploadRequest, _file, cb) => {
+  destination: (req: UploadRequest, _file, cb) => {
     try {
-      req.audioCompressUploadDir ??= path.join(config.tempRoot, nanoid(12), "uploads");
-      const dir = req.audioCompressUploadDir;
-      await ensureDir(dir);
-      cb(null, dir);
+      if (!req.audioCompressUploadDir) {
+        const jobId = nanoid(12);
+        req.audioCompressUploadDir = path.join(config.tempRoot, jobId, "uploads");
+        fs.mkdirSync(req.audioCompressUploadDir, { recursive: true });
+      }
+      cb(null, req.audioCompressUploadDir);
     } catch (error) {
       cb(error as Error, "");
     }
@@ -38,23 +40,34 @@ const upload = multer({
   },
   fileFilter: (_req, file, cb) => {
     const format = formatFromFilename(file.originalname);
-    if (!format) cb(new Error("Only MP3 and M4A files are supported."));
+    if (!format) cb(new Error(`Unsupported file format: ${path.extname(file.originalname)}`));
     else cb(null, true);
   }
 });
 
 app.disable("x-powered-by");
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true, service: "AudioCompress" });
 });
 
-app.post("/api/jobs", upload.array("files", config.maxUploadFiles), async (req, res) => {
+app.post("/api/jobs", (req, res, next) => {
+  upload.array("files", config.maxUploadFiles)(req, res, (err) => {
+    if (err) {
+      console.error("Upload error:", err);
+      return next(err);
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const files = (req.files ?? []) as Express.Multer.File[];
     const targetMb = Number(req.body.targetMb ?? 60);
     const force = req.body.force === "true";
+
+    console.log(`Job request: ${files.length} files, target ${targetMb}MB, force ${force}`);
 
     if (!Number.isFinite(targetMb) || targetMb <= 0 || targetMb > 1000) {
       res.status(400).json({ error: "Choose a target size between 1 MB and 1000 MB." });
@@ -64,14 +77,13 @@ app.post("/api/jobs", upload.array("files", config.maxUploadFiles), async (req, 
       res.status(400).json({ error: "Upload at least one MP3 or M4A file." });
       return;
     }
-    if (files.length > config.maxUploadFiles) {
-      res.status(400).json({ error: `You can upload up to ${config.maxUploadFiles} files.` });
-      return;
-    }
 
     const firstDir = path.dirname(files[0].path);
     const rootDir = path.dirname(firstDir);
     const outputDir = path.join(rootDir, "outputs");
+    
+    await ensureDir(outputDir);
+
     const uploaded: UploadedAudio[] = files.map((file) => {
       const format = formatFromFilename(file.originalname);
       if (!format) throw new Error("Only MP3 and M4A files are supported.");
@@ -86,8 +98,10 @@ app.post("/api/jobs", upload.array("files", config.maxUploadFiles), async (req, 
     });
 
     const job = createJob(uploaded, targetMb, force, { uploadDir: firstDir, outputDir });
+    console.log(`Created job ${job.id}`);
     res.status(202).json(toPublicJob(job));
   } catch (error) {
+    console.error("Job creation error:", error);
     res.status(400).json({ error: error instanceof Error ? error.message : "Upload failed." });
   }
 });
@@ -110,8 +124,9 @@ app.get("/api/jobs/:id/events", (req, res) => {
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
   });
 
   const unsubscribe = subscribe(job.id, (payload) => {
