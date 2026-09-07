@@ -12,9 +12,9 @@ describe("project completion calculations", () => {
   it("calculates category percentages from actual task counts", () => {
     const categories = calculateCategoryProgress(projectTasks);
     const testing = categories.find((item) => item.category === "testing");
-    expect(testing?.completed).toBe(5);
+    expect(testing?.completed).toBe(6);
     expect(testing?.total).toBe(6);
-    expect(testing?.percent).toBe(83);
+    expect(testing?.percent).toBe(100);
   });
 
   it("maps status labels by requested ranges", () => {

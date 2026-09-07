@@ -1,80 +1,88 @@
-import React, { useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
-import {
-  Archive,
-  BadgeCheck,
-  Check,
-  ChevronDown,
-  CircleDot,
-  Download,
-  FileAudio,
-  Gauge,
-  Lock,
-  RefreshCw,
-  Sparkles,
-  UploadCloud,
-  X,
-  Zap
-} from "lucide-react";
-import { Toaster, toast } from "sonner";
-import {
-  calculateCategoryProgress,
-  calculateOverallProgress,
-  categoryLabels,
-  projectTasks,
-  type CompletionCategory,
-  type ProjectTask
-} from "./projectCompletion";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import "./styles.css";
+import { createRoot } from "react-dom/client";
+import { Activity, CheckCircle, Disc, Download, Music, Radio, RefreshCw, Settings2, Sparkles, UploadCloud, X } from "lucide-react";
+import { Toaster, toast } from "sonner";
+import { calculateCategoryProgress, calculateOverallProgress, projectTasks } from "./projectCompletion";
 
-type FileStatus = "queued" | "processing" | "completed" | "failed" | "skipped";
-type JobStatus = "queued" | "processing" | "completed" | "failed";
-
+// --- Types ---
 interface PublicFile {
   id: string;
   name: string;
-  format: "mp3" | "m4a";
+  format: string;
   originalSize: number;
   outputSize?: number;
   duration?: number;
   bitrateKbps?: number;
   progress: number;
-  status: FileStatus;
-  error?: string;
+  status: "queued" | "processing" | "completed" | "failed";
   downloadUrl?: string;
+  error?: string;
 }
 
 interface PublicJob {
   id: string;
-  status: JobStatus;
+  status: "queued" | "processing" | "completed" | "failed";
   targetMb: number;
   force: boolean;
   currentFileId?: string;
   completed: number;
   remaining: number;
   overallProgress: number;
-  error?: string;
   files: PublicFile[];
   zipUrl?: string;
+  error?: string;
 }
 
-const targets = [10, 20, 30, 40, 50, 60];
+function formatBytes(bytes: number, decimals = 1) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
+}
+
+const PRESETS = [
+  { id: 'p60', label: 'Max Quality', target: 60, desc: 'Near transparent', color: '#10b981' },
+  { id: 'p40', label: 'High Quality', target: 40, desc: 'Excellent balance', color: '#3b82f6' },
+  { id: 'p30', label: 'Balanced', target: 30, desc: 'Standard compression', color: '#8b5cf6' },
+  { id: 'p20', label: 'Small File', target: 20, desc: 'Fast sharing', color: '#d946ef' },
+  { id: 'p10', label: 'Extreme', target: 10, desc: 'Maximum reduction', color: '#f43f5e' },
+];
+
+const PROCESSING_MESSAGES = [
+  "Analyzing audio frequencies...",
+  "Optimizing bitrate...",
+  "Preserving sound quality...",
+  "Removing unnecessary data...",
+  "Finalizing your compressed audio..."
+];
 
 function App() {
   const [files, setFiles] = useState<File[]>([]);
-  const [targetMb, setTargetMb] = useState(60);
-  const [customTarget, setCustomTarget] = useState("");
+  const [targetMb, setTargetMb] = useState(30);
+  const [presetId, setPresetId] = useState('p30');
   const [force, setForce] = useState(false);
+  
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [job, setJob] = useState<PublicJob | null>(null);
+  
   const inputRef = useRef<HTMLInputElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  
+  const [msgIdx, setMsgIdx] = useState(0);
 
-  const activeTarget = customTarget ? Number(customTarget) : targetMb;
-  const stats = useMemo(() => {
-    const total = files.reduce((sum, file) => sum + file.size, 0);
-    return { count: files.length, total };
-  }, [files]);
+  useEffect(() => {
+    if (job?.status === 'processing' || isUploading) {
+      const int = setInterval(() => setMsgIdx(i => (i + 1) % PROCESSING_MESSAGES.length), 2500);
+      return () => clearInterval(int);
+    }
+  }, [job?.status, isUploading]);
+
+  const activePreset = PRESETS.find(p => p.id === presetId);
+  const activeColor = activePreset?.color || '#8b5cf6';
 
   const addFiles = (incoming: FileList | File[]) => {
     const next = Array.from(incoming);
@@ -93,19 +101,24 @@ function App() {
     setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const handlePresetClick = (preset: typeof PRESETS[0]) => {
+    setPresetId(preset.id);
+    setTargetMb(preset.target);
+  };
+
   const startCompression = async () => {
     if (!files.length) {
       toast.error("Add at least one MP3 or M4A file.");
       return;
     }
-    if (!Number.isFinite(activeTarget) || activeTarget <= 0) {
-      toast.error("Choose a valid target size.");
+    if (!Number.isFinite(targetMb) || targetMb <= 0 || targetMb > 1000) {
+      toast.error("Choose a target size between 1 MB and 1000 MB.");
       return;
     }
 
     const body = new FormData();
     files.forEach((file) => body.append("files", file));
-    body.append("targetMb", String(activeTarget));
+    body.append("targetMb", String(targetMb));
     body.append("force", String(force));
 
     setIsUploading(true);
@@ -115,7 +128,7 @@ function App() {
       if (!response.ok || "error" in payload) throw new Error("error" in payload ? payload.error : "Upload failed.");
       setJob(payload);
       listenForProgress(payload.id);
-      toast.success("Compression started.");
+      toast.success("Compression engine started.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Upload failed.");
     } finally {
@@ -124,394 +137,249 @@ function App() {
   };
 
   const listenForProgress = (jobId: string) => {
+    eventSourceRef.current?.close();
     const events = new EventSource(`/api/jobs/${jobId}/events`);
+    eventSourceRef.current = events;
+
     events.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as PublicJob;
-      setJob(payload);
-      if (payload.status === "completed") {
-        toast.success("Your compressed files are ready.");
-        events.close();
-      }
-      if (payload.status === "failed") {
-        toast.error(payload.error ?? "Compression failed.");
-        events.close();
-      }
+      try {
+        const payload = JSON.parse(event.data) as PublicJob;
+        setJob(payload);
+        if (payload.status === "completed") {
+          toast.success("Your compressed tracks are ready.");
+          events.close();
+          eventSourceRef.current = null;
+        }
+        if (payload.status === "failed") {
+          toast.error(payload.error ?? "Compression failed.");
+          events.close();
+          eventSourceRef.current = null;
+        }
+      } catch {}
     };
     events.onerror = () => {
-      events.close();
-      toast.error("Lost connection to progress updates.");
+      if (events.readyState === EventSource.CLOSED) {
+        toast.error("Lost connection to progress updates.");
+        eventSourceRef.current = null;
+      }
     };
   };
 
   const reset = () => {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
     setFiles([]);
     setJob(null);
-    setForce(false);
-    setCustomTarget("");
-    setTargetMb(60);
   };
 
+  const renderSignatureVisualizer = (isProcessing = false) => (
+    <div className={`signature-visualizer ${isProcessing ? 'processing' : ''}`} style={{ '--theme-color': activeColor } as React.CSSProperties}>
+      <div className="vis-ring ring-1" />
+      <div className="vis-ring ring-2" />
+      <div className="vis-core">
+        {isProcessing ? (
+          <>
+            <span className="vis-value">{job?.overallProgress || 0}</span>
+            <span className="vis-unit">%</span>
+            <span className="vis-label">Completed</span>
+          </>
+        ) : (
+          <>
+            <span className="vis-value">{targetMb}</span>
+            <span className="vis-unit">MB</span>
+            <span className="vis-label">Target Per Track</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+
   return (
-    <main>
-      <Toaster richColors position="top-right" />
-      <section className="hero">
+    <>
+      <Toaster theme="dark" position="top-center" />
+      
+      <main>
         <nav className="nav">
           <div className="brand">
-            <FileAudio size={24} />
-            <span>AudioCompress</span>
-          </div>
-          <div className="nav-links">
-            <a href="#compressor" className="nav-action">Start Compressing</a>
-            <a href="#completion" className="nav-action nav-secondary">Project Status</a>
+            <Activity /> AudioCompress
           </div>
         </nav>
 
-        <div className="hero-grid">
-          <div className="hero-copy">
-            <div className="eyebrow"><Sparkles size={16} /> Smart FFmpeg compression</div>
-            <h1>Compress MP3 &amp; M4A Files Instantly</h1>
-            <p>Reduce audio file size while keeping excellent sound quality.</p>
+        {!job && files.length === 0 && (
+          <div className="hero">
+            <h1>Compress Audio.<br/>Keep Every Beat.</h1>
+            <p>Premium AI-powered audio compression. Reduce file sizes significantly while preserving studio-quality sound.</p>
           </div>
-          <div className="hero-panel">
-            <div className="meter">
-              <span>150 MB</span>
-              <div><i style={{ width: "42%" }} /></div>
-              <span>60 MB</span>
-            </div>
-            <div className="wave" aria-hidden="true">
-              {Array.from({ length: 34 }).map((_, index) => <b key={index} />)}
-            </div>
-            <div className="compat">
-              <span>Spotify</span><span>Apple Music</span><span>VLC</span>
-            </div>
-          </div>
-        </div>
-      </section>
+        )}
 
-      <section className="features">
-        {[
-          ["Batch Compression", Archive],
-          ["Smart Size Targeting", Gauge],
-          ["Fast Processing", Zap],
-          ["Secure Processing", Lock],
-          ["No Signup Required", BadgeCheck],
-          ["Free to Use", Check]
-        ].map(([label, Icon]) => (
-          <div className="feature-card" key={label as string}>
-            <Icon size={22} />
-            <span>{label as string}</span>
-          </div>
-        ))}
-      </section>
-
-      <section id="compressor" className="workspace">
-        {!job ? (
-          <>
-            <div
-              className={`dropzone ${isDragging ? "dragging" : ""}`}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setIsDragging(false);
-                addFiles(event.dataTransfer.files);
-              }}
-            >
-              <input
-                ref={inputRef}
-                type="file"
-                accept=".mp3,.m4a,audio/mpeg,audio/mp4"
-                multiple
-                onChange={(event) => event.target.files && addFiles(event.target.files)}
-              />
-              <UploadCloud size={42} />
-              <h2>Drop audio files here</h2>
-              <p>MP3 and M4A only. Add up to 100 files.</p>
-              <button onClick={() => inputRef.current?.click()} type="button">Browse Files</button>
-            </div>
-
-            <div className="controls">
-              <div>
-                <label>Target size</label>
-                <div className="target-grid">
-                  {targets.map((target) => (
-                    <button
-                      key={target}
-                      className={!customTarget && targetMb === target ? "selected" : ""}
-                      onClick={() => {
-                        setTargetMb(target);
-                        setCustomTarget("");
-                      }}
-                      type="button"
-                    >
-                      {target} MB
-                    </button>
-                  ))}
-                  <label className="custom-size">
-                    <span>Custom</span>
-                    <input
-                      inputMode="numeric"
-                      min="1"
-                      max="1000"
-                      placeholder="MB"
-                      value={customTarget}
-                      onChange={(event) => setCustomTarget(event.target.value.replace(/[^\d]/g, ""))}
-                    />
-                  </label>
-                </div>
+        {!job && files.length === 0 && (
+          <div
+            className={`dropzone ${isDragging ? "dragging" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+            }}
+            onClick={() => inputRef.current?.click()}
+          >
+            <input type="file" multiple accept=".mp3,.m4a,audio/mpeg,audio/mp4" ref={inputRef} onChange={(e) => {
+              if (e.target.files?.length) addFiles(e.target.files);
+              e.target.value = "";
+            }} />
+            <div className="dropzone-content">
+              <div className="visualizer-idle">
+                <Radio size={48} className="pulse-icon" />
               </div>
-              <label className="toggle">
-                <input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />
-                <span />
-                Recompress files already below target
-              </label>
+              <h2>Drop your tracks here</h2>
+              <p style={{ color: "var(--text-muted)", marginTop: -8 }}>Supports MP3 & M4A (Up to 100 tracks)</p>
+              <button className="btn-primary" onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}>
+                <UploadCloud /> Select Audio Files
+              </button>
             </div>
+          </div>
+        )}
 
-            {files.length > 0 && (
-              <div className="file-list">
-                <div className="list-head">
-                  <h2>{stats.count} file{stats.count === 1 ? "" : "s"} ready</h2>
-                  <span>{formatBytes(stats.total)}</span>
-                </div>
-                {files.map((file, index) => (
-                  <div className="file-row" key={`${file.name}-${file.lastModified}-${index}`}>
-                    <FileAudio size={20} />
-                    <div>
-                      <strong>{file.name}</strong>
-                      <span>{formatBytes(file.size)} · {extension(file.name)}</span>
+        {!job && files.length > 0 && (
+          <div className="workspace-grid">
+            <div className="tracks-panel glass-panel">
+              <h3><Music size={18} /> Uploaded Tracks ({files.length})</h3>
+              <div className="tracks-list">
+                {files.map((file, idx) => (
+                  <div key={idx} className="audio-player-card">
+                    <div className="player-icon"><Disc className="spin" /></div>
+                    <div className="player-info">
+                      <h4>{file.name}</h4>
+                      <div className="player-meta">
+                        <span>{formatBytes(file.size)}</span>
+                        <span>{file.name.split('.').pop()?.toUpperCase()}</span>
+                      </div>
                     </div>
-                    <button aria-label={`Remove ${file.name}`} onClick={() => removeFile(index)} type="button">
-                      <X size={18} />
-                    </button>
+                    <button className="remove-btn" onClick={() => removeFile(idx)}><X size={18} /></button>
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+            
+            <div className="settings-panel glass-panel">
+              <h3><Settings2 size={18} /> Compression Engine</h3>
+              
+              <div className="visualizer-container">
+                {renderSignatureVisualizer()}
+              </div>
 
-            <button className="primary" disabled={isUploading || files.length === 0} onClick={startCompression} type="button">
-              {isUploading ? "Uploading..." : `Compress to ${activeTarget || 60} MB`}
-              <ChevronDown size={18} />
-            </button>
-          </>
-        ) : (
-          <Results job={job} onReset={reset} />
+              <div className="presets-grid">
+                {PRESETS.map(p => (
+                  <button
+                    key={p.id}
+                    className={`preset-btn ${presetId === p.id ? 'active' : ''}`}
+                    onClick={() => handlePresetClick(p)}
+                    style={{ '--accent': p.color, '--accent-rgb': p.color === '#10b981' ? '16, 185, 129' : p.color === '#3b82f6' ? '59, 130, 246' : p.color === '#8b5cf6' ? '139, 92, 246' : p.color === '#d946ef' ? '217, 70, 239' : '244, 63, 94' } as React.CSSProperties}
+                  >
+                    <div>
+                      <div className="preset-name">{p.label}</div>
+                      <div className="preset-meta">{p.desc}</div>
+                    </div>
+                    <div className="preset-name">{p.target} MB</div>
+                  </button>
+                ))}
+              </div>
+
+              <label className="toggle-row">
+                <input type="checkbox" style={{ display: 'none' }} checked={force} onChange={(e) => setForce(e.target.checked)} />
+                <div className="toggle-switch" />
+                Force recompression (ignore target constraints)
+              </label>
+
+              <button className="btn-primary" onClick={startCompression} disabled={isUploading} style={{ width: '100%', justifyContent: 'center' }}>
+                <Sparkles /> {isUploading ? "Starting Engine..." : "Compress Tracks"}
+              </button>
+            </div>
+          </div>
         )}
-      </section>
 
-      <ProjectCompletionDashboard />
-    </main>
-  );
-}
-
-function ProjectCompletionDashboard() {
-  const categoryProgress = useMemo(() => calculateCategoryProgress(projectTasks), []);
-  const overall = useMemo(() => calculateOverallProgress(projectTasks), []);
-  const milestones = useMemo(() => buildMilestones(projectTasks), []);
-  const deployment = categoryProgress.find((item) => item.category === "deployment");
-  const tests = categoryProgress.find((item) => item.category === "testing");
-  const radius = 56;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (overall.percent / 100) * circumference;
-  const remainingTasks = projectTasks.filter((task) => task.state === "remaining");
-
-  return (
-    <section id="completion" className="completion-dashboard">
-      <div className="section-heading">
-        <span><CircleDot size={16} /> Project Completion Dashboard</span>
-        <h2>Real-time project readiness</h2>
-        <p>Progress is calculated automatically from completed work divided by total project scope.</p>
-      </div>
-
-      <div className="dashboard-grid">
-        <div className="completion-card ring-card">
-          <div
-            className="ring-wrap"
-            style={{ "--progress-offset": offset, "--ring-size": circumference } as React.CSSProperties}
-          >
-            <svg viewBox="0 0 140 140" aria-label={`Overall project progress ${overall.percent}%`}>
-              <circle className="ring-track" cx="70" cy="70" r={radius} />
-              <circle className="ring-progress" cx="70" cy="70" r={radius} />
-            </svg>
-            <div>
-              <strong>{overall.percent}%</strong>
-              <span>Overall Completion</span>
+        {(job?.status === 'processing' || (isUploading && !job)) && (
+          <div className="processing-screen glass-panel">
+            {renderSignatureVisualizer(true)}
+            <h2 className="processing-text">{PROCESSING_MESSAGES[msgIdx]}</h2>
+            <div className="progress-bar-container">
+              <div className="progress-fill" style={{ width: `${job?.overallProgress || 0}%` }} />
             </div>
           </div>
-          <div className="status-pill">{overall.status}</div>
-        </div>
+        )}
 
-        <div className="completion-card counters-card">
-          <div>
-            <span>Completed Tasks</span>
-            <strong>{overall.completed}</strong>
-          </div>
-          <div>
-            <span>Remaining Tasks</span>
-            <strong>{overall.remaining}</strong>
-          </div>
-          <div>
-            <span>Total Scope</span>
-            <strong>{overall.total}</strong>
-          </div>
-        </div>
-
-        <div className="completion-card categories-card">
-          {categoryProgress.map((item) => (
-            <div className="category-progress" key={item.category}>
-              <div>
-                <strong>{item.label}</strong>
-                <span>{item.completed}/{item.total} tasks / {item.status}</span>
+        {job?.status === 'completed' && (
+          <div className="success-screen">
+            <div className="success-hero glass-panel">
+              <CheckCircle className="success-icon" />
+              <h2>Compression Complete</h2>
+              
+              {(() => {
+                const totalOrig = job.files.reduce((acc, f) => acc + f.originalSize, 0);
+                const totalComp = job.files.reduce((acc, f) => acc + (f.outputSize || f.originalSize), 0);
+                const saved = Math.max(0, totalOrig - totalComp);
+                const savedPercent = totalOrig > 0 ? Math.round((saved / totalOrig) * 100) : 0;
+                
+                return (
+                  <div className="space-saved-stat">
+                    <span className="saved-value">{savedPercent}%</span>
+                    <span className="saved-label">Smaller</span>
+                  </div>
+                );
+              })()}
+              
+              <div className="success-actions">
+                {job.zipUrl && (
+                  <a href={job.zipUrl} className="btn-primary" style={{ textDecoration: 'none' }}>
+                    <Download /> Download ZIP Archive
+                  </a>
+                )}
+                <button className="btn-secondary" onClick={reset}>
+                  <RefreshCw /> Compress More
+                </button>
               </div>
-              <b>{item.percent}%</b>
-              <div className="animated-bar"><i style={{ width: `${item.percent}%` }} /></div>
             </div>
-          ))}
-        </div>
-      </div>
 
-      <div className="milestone-grid">
-        <div className="completion-card milestone-card">
-          <h3>Milestone Tracker</h3>
-          <div className="milestone-list">
-            {milestones.map((milestone) => (
-              <div className="milestone-row" key={milestone.category}>
-                <span className={milestone.percent === 100 ? "done" : ""}><Check size={15} /></span>
-                <div>
-                  <strong>{categoryLabels[milestone.category]}</strong>
-                  <small>{milestone.completed}/{milestone.total} completed</small>
+            <div className="tracks-list" style={{ maxHeight: 'none' }}>
+              {job.files.map((file) => (
+                <div key={file.id} className="result-row">
+                  <div className="player-info">
+                    <h4>{file.name}</h4>
+                    <div className="player-meta">
+                      {file.status === "completed" ? "Optimized successfully" : "Failed / Skipped"}
+                    </div>
+                  </div>
+                  
+                  <div className="result-stats">
+                    <div className="stat-group">
+                      <span className="stat-label">Original</span>
+                      <span className="stat-val">{formatBytes(file.originalSize)}</span>
+                    </div>
+                    <div className="stat-group">
+                      <span className="stat-label">Compressed</span>
+                      <span className="stat-val highlight">{file.outputSize ? formatBytes(file.outputSize) : "—"}</span>
+                    </div>
+                    <div className="stat-group">
+                      <span className="stat-label">Bitrate</span>
+                      <span className="stat-val">{file.bitrateKbps ? `${file.bitrateKbps} kbps` : "—"}</span>
+                    </div>
+                  </div>
+
+                  {file.downloadUrl && (
+                    <a href={file.downloadUrl} className="remove-btn" title="Download">
+                      <Download size={20} />
+                    </a>
+                  )}
                 </div>
-                <b>{milestone.percent}%</b>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-
-        <div className="completion-card report-card">
-          <h3>Final Deployment Report</h3>
-          <dl>
-            <div><dt>Project Status</dt><dd>{overall.status}</dd></div>
-            <div><dt>Overall Progress</dt><dd>{overall.percent}%</dd></div>
-            <div><dt>Build Status</dt><dd>Success</dd></div>
-            <div><dt>Test Status</dt><dd>{tests?.completed ?? 0}/{tests?.total ?? 0} checks passed</dd></div>
-            <div><dt>Deployment Status</dt><dd>{deployment?.status ?? "In Progress"}</dd></div>
-            <div><dt>Deployment Ready</dt><dd>{(deployment?.percent ?? 0) >= 96 ? "Yes" : "Not yet"}</dd></div>
-            <div><dt>Remaining Tasks</dt><dd>{remainingTasks.map((task) => task.label).join(", ")}</dd></div>
-            <div><dt>Deployment Readiness</dt><dd>{deployment?.percent ?? 0}%</dd></div>
-          </dl>
-        </div>
-      </div>
-    </section>
+        )}
+      </main>
+    </>
   );
 }
 
-function buildMilestones(tasks: ProjectTask[]) {
-  return (Object.keys(categoryLabels) as CompletionCategory[]).map((category) => {
-    const scoped = tasks.filter((task) => task.category === category);
-    const completed = scoped.filter((task) => task.state === "completed").length;
-    const total = scoped.length;
-    return {
-      category,
-      completed,
-      total,
-      percent: total ? Math.round((completed / total) * 100) : 0
-    };
-  });
-}
-
-function Results({ job, onReset }: { job: PublicJob; onReset: () => void }) {
-  const current = job.files.find((file) => file.id === job.currentFileId);
-  return (
-    <div className="results">
-      <div className="progress-card">
-        <div className="progress-top">
-          <div>
-            <span>{job.status === "completed" ? "Complete" : "Processing"}</span>
-            <h2>{current?.name ?? "Batch results"}</h2>
-          </div>
-          <strong>{job.overallProgress}%</strong>
-        </div>
-        <div className="bar"><i style={{ width: `${job.overallProgress}%` }} /></div>
-        <div className="progress-meta">
-          <span>{job.completed} completed</span>
-          <span>{job.remaining} remaining</span>
-          <span>{job.files.length} total</span>
-        </div>
-      </div>
-
-      <div className="result-list">
-        {job.files.map((file) => <ResultRow key={file.id} file={file} />)}
-      </div>
-
-      <div className="result-actions">
-        <a className={`primary link ${job.zipUrl ? "" : "disabled"}`} href={job.zipUrl ?? "#"}>
-          <Download size={18} /> Download All as ZIP
-        </a>
-        <button className="secondary" onClick={onReset} type="button">
-          <RefreshCw size={18} /> Compress More Files
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ResultRow({ file }: { file: PublicFile }) {
-  const saved = file.outputSize ? Math.max(file.originalSize - file.outputSize, 0) : 0;
-  const percent = file.outputSize ? Math.round((saved / file.originalSize) * 100) : 0;
-
-  return (
-    <div className="result-row">
-      <div className="file-title">
-        <FileAudio size={20} />
-        <div>
-          <strong>{file.name}</strong>
-          <span>{statusText(file.status)}</span>
-        </div>
-      </div>
-      <div className="mini-bar"><i style={{ width: `${file.progress}%` }} /></div>
-      <div className="numbers">
-        <span>Original <b>{formatBytes(file.originalSize)}</b></span>
-        <span>Compressed <b>{file.outputSize ? formatBytes(file.outputSize) : "-"}</b></span>
-        <span>Saved <b>{formatBytes(saved)}</b></span>
-        <span>Reduction <b>{percent}%</b></span>
-      </div>
-      {file.error && <p className="error">{file.error}</p>}
-      {file.downloadUrl && (
-        <a className="download" href={file.downloadUrl}>
-          <Download size={17} /> Download File
-        </a>
-      )}
-    </div>
-  );
-}
-
-function extension(name: string) {
-  return name.split(".").pop()?.toUpperCase() ?? "AUDIO";
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
-}
-
-function statusText(status: FileStatus) {
-  const labels: Record<FileStatus, string> = {
-    queued: "Queued",
-    processing: "Processing",
-    completed: "Compressed",
-    skipped: "Already below target",
-    failed: "Failed"
-  };
-  return labels[status];
-}
-
-createRoot(document.getElementById("root")!).render(<App />);
+const root = createRoot(document.getElementById("root")!);
+root.render(<App />);

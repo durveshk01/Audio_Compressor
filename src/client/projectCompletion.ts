@@ -65,13 +65,14 @@ export const projectTasks: ProjectTask[] = [
   { id: "upload-testing", category: "testing", milestone: "Testing", label: "Upload Testing", state: "completed" },
   { id: "compression-testing", category: "testing", milestone: "Testing", label: "Compression Testing", state: "completed" },
   { id: "zip-testing", category: "testing", milestone: "Testing", label: "ZIP Testing", state: "completed" },
-  { id: "browser-smoke-test", category: "testing", milestone: "Testing", label: "In-App Browser Smoke Test", state: "remaining" },
+  { id: "browser-smoke-test", category: "testing", milestone: "Testing", label: "In-App Browser Smoke Test", state: "completed" },
 
   { id: "render-yaml", category: "deployment", milestone: "Deployment", label: "Render Blueprint", state: "completed" },
   { id: "ffmpeg-apt", category: "deployment", milestone: "Deployment", label: "FFmpeg apt.txt Install", state: "completed" },
   { id: "health-endpoint", category: "deployment", milestone: "Deployment", label: "Health Endpoint", state: "completed" },
   { id: "production-build", category: "deployment", milestone: "Deployment", label: "Production Build", state: "completed" },
   { id: "git-ready", category: "deployment", milestone: "Deployment", label: "GitHub-Ready Repository", state: "completed" },
+  { id: "security-hardening", category: "deployment", milestone: "Deployment", label: "Security Hardening (Helmet + Rate Limiting)", state: "completed" },
   { id: "render-live-deploy", category: "deployment", milestone: "Deployment", label: "Live Render Deployment", state: "remaining" }
 ];
 

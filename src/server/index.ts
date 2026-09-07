@@ -1,4 +1,6 @@
 import express from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import multer from "multer";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,6 +13,21 @@ import { ensureDir, formatFromFilename, sanitizeFilename, toPublicJob } from "./
 
 const app = express();
 await ensureDir(config.tempRoot);
+
+// Security headers (allow inline styles for the React app)
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
+
+// Rate limit uploads to prevent abuse (20 job requests per 15 minutes per IP)
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many uploads, please try again later." }
+});
 
 type UploadRequest = express.Request & { audioCompressUploadDir?: string };
 
@@ -53,10 +70,16 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ ok: true, service: "AudioCompress" });
 });
 
-app.post("/api/jobs", (req, res, next) => {
+app.post("/api/jobs", uploadLimiter, (req, res, next) => {
   upload.array("files", config.maxUploadFiles)(req, res, (err) => {
     if (err) {
       console.error("Upload error:", err);
+      // Clean up orphaned upload directory on failure
+      const uploadDir = (req as UploadRequest).audioCompressUploadDir;
+      if (uploadDir) {
+        const rootDir = path.dirname(uploadDir);
+        fs.rm(rootDir, { recursive: true, force: true }, () => {});
+      }
       return next(err);
     }
     next();
@@ -129,10 +152,27 @@ app.get("/api/jobs/:id/events", (req, res) => {
     "X-Accel-Buffering": "no"
   });
 
+  // Keep-alive heartbeat to prevent proxy/load-balancer timeouts
+  const keepAlive = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch { /* connection gone */ }
+  }, 20_000);
+
   const unsubscribe = subscribe(job.id, (payload) => {
-    res.write(`data: ${payload}\n\n`);
+    try {
+      res.write(`data: ${payload}\n\n`);
+      // Close SSE when job reaches a terminal state
+      const parsed = JSON.parse(payload);
+      if (parsed.status === "completed" || parsed.status === "failed") {
+        clearInterval(keepAlive);
+        res.end();
+      }
+    } catch { /* connection gone */ }
   });
-  req.on("close", unsubscribe);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
 });
 
 app.get("/api/download/:jobId/zip", (req, res) => {
@@ -163,8 +203,12 @@ if (fs.existsSync(clientDir)) {
   });
 }
 
-app.use((error: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  res.status(400).json({ error: error.message || "Something went wrong." });
+app.use((error: Error, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    return next(error);
+  }
+  const status = (error as Error & { status?: number }).status ?? 400;
+  res.status(status).json({ error: error.message || "Something went wrong." });
 });
 
 app.listen(config.port, "0.0.0.0", () => {

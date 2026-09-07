@@ -157,20 +157,37 @@ async function createZip(job: Job) {
   const success = job.files.filter((file) => file.outputPath);
   if (success.length === 0) return;
 
+  // Deduplicate archive entry names to prevent overwrites
+  const nameCount = new Map<string, number>();
+  const getUniqueName = (name: string) => {
+    const count = nameCount.get(name) ?? 0;
+    nameCount.set(name, count + 1);
+    if (count === 0) return name;
+    const dot = name.lastIndexOf(".");
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    return `${base} (${count})${ext}`;
+  };
+
   const zipPath = path.join(job.outputDir, `${job.id}-audiocompress.zip`);
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(zipPath);
     const archive = archiver("zip", { zlib: { level: 1 } });
 
     output.on("close", resolve);
+    output.on("error", reject);
     archive.on("error", reject);
+    archive.on("warning", (err) => {
+      if (err.code !== "ENOENT") reject(err);
+    });
     archive.pipe(output);
 
     for (const file of success) {
-      archive.file(file.outputPath as string, { name: file.outputName ?? compressedName(file.originalName) });
+      const entryName = getUniqueName(file.outputName ?? compressedName(file.originalName));
+      archive.file(file.outputPath as string, { name: entryName });
     }
 
-    void archive.finalize();
+    archive.finalize().catch(reject);
   });
 
   job.zipPath = zipPath;
@@ -180,11 +197,14 @@ setInterval(() => {
   const ttl = config.jobTtlMinutes * 60 * 1000;
   const now = Date.now();
   for (const [jobId, job] of jobs.entries()) {
+    // Never delete jobs that are still processing
+    if (job.status === "processing" || job.status === "queued") continue;
     if (now - job.createdAt > ttl) {
       jobs.delete(jobId);
       subscribers.delete(jobId);
-      void removeDir(job.uploadDir);
-      void removeDir(job.outputDir);
+      // Remove the entire job root directory (parent of uploads/ and outputs/)
+      const rootDir = path.dirname(job.uploadDir);
+      void removeDir(rootDir);
     }
   }
 }, 10 * 60 * 1000).unref();
